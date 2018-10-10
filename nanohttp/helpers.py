@@ -1,17 +1,15 @@
-
 import cgi
-import ujson
 import threading
-from os.path import isdir, join
 
 import pymlconf
+import ujson
 
-from .configuration import settings
 from . import exceptions
+from .configuration import settings, configure
 
 
-class LazyAttribute(object):
-    """ ``attribute`` decorator is intended to promote a
+class LazyAttribute:
+    """ ``LazyAttribute`` decorator is intended to promote a
         function call to object attribute. This means the
         function is called once and replaced with
         returned value.
@@ -36,51 +34,21 @@ class LazyAttribute(object):
 
     def __get__(self, obj, t=None):
         f = self.f
+        if obj is None:
+            return f
         val = f(obj)
         setattr(obj, f.__name__, val)
         return val
 
 
-def load_controller_from_file(specifier):
-    from importlib.util import spec_from_file_location, module_from_spec
-    controller = None
-
-    if specifier:
-        module_name, class_name = specifier.split(':') \
-            if ':' in specifier else (specifier, 'Root')
-
-        if module_name:
-
-            if isdir(module_name):
-                location = join(module_name, '__init__.py')
-            elif module_name.endswith('.py'):
-                location = module_name
-                module_name = module_name[:-3]
-            else:
-                location = '%s.py' % module_name
-
-            spec = spec_from_file_location(module_name, location=location)
-            module = module_from_spec(spec)
-            spec.loader.exec_module(module)
-            controller = getattr(module, class_name)()
-
-        elif class_name == 'Static':
-            from .controllers import Static
-            controller = Static()
-        else:  # pragma: no cover
-            controller = globals()[class_name]()
-
-    return controller
-
-
-def quickstart(controller=None, application=None, host='localhost',  port=8080,
+def quickstart(controller=None, application=None, host='localhost', port=8080,
                block=True, config=None):
     from wsgiref.simple_server import make_server
 
     try:
-        settings.proxied_object
+        settings.debug
     except pymlconf.ConfigurationNotInitializedError:
-        settings.load()
+        configure()
 
     if config:
         settings.merge(config)
@@ -120,13 +88,15 @@ def get_cgi_field_value(field):
 
 
 def parse_any_form(environ, content_length=None, content_type=None):
+    if content_type == 'application/json':
+        if content_length is None:
+            raise exceptions.HTTPBadRequest('Content-Length required')
 
-    if content_length and content_type == 'application/json':
         fp = environ['wsgi.input']
         data = fp.read(content_length)
         try:
             return ujson.decode(data)
-        except ValueError:
+        except (ValueError, TypeError):
             raise exceptions.HTTPBadRequest('Cannot parse the request')
 
     try:
@@ -136,8 +106,8 @@ def parse_any_form(environ, content_length=None, content_type=None):
             strict_parsing=False,
             keep_blank_values=True
         )
-    except TypeError:
-        raise exceptions.HTTPBadRequest('Cannot parse the request.')
+    except (TypeError, ValueError):
+        raise exceptions.HTTPBadRequest('Cannot parse the request')
 
     result = {}
     if storage.list is None or not len(storage.list):

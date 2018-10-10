@@ -1,4 +1,4 @@
-
+import io
 import threading
 import wsgiref.util
 import wsgiref.headers
@@ -20,12 +20,7 @@ class ContextStack(list):
     def push(self, item):
         self.append(item)
 
-    @property
-    def hasitem(self):
-        return self
 
-
-# FIXME: use __slots__
 class Context:
     """A Global context for Request and Response.
 
@@ -57,8 +52,16 @@ class Context:
     #: Current :class:`.Application` instance
     application = None
 
-    #: Nested contexts stack
-    __stack__ = ContextStack()
+    @property
+    def __stack__(self):
+        """Nested contexts stack
+        """
+        THREADLOCAL_STACK_ATTRIBUTE = 'nanohttp_context_stack'
+        if not hasattr(self.thread_local, THREADLOCAL_STACK_ATTRIBUTE):
+            setattr(
+                self.thread_local, THREADLOCAL_STACK_ATTRIBUTE, ContextStack()
+            )
+        return getattr(self.thread_local, THREADLOCAL_STACK_ATTRIBUTE)
 
     def __init__(self, environ, application=None):
         """
@@ -79,7 +82,7 @@ class Context:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         del self.thread_local.nanohttp_context
-        if self.__stack__.hasitem:
+        if self.__stack__:
             self.thread_local.nanohttp_context = self.__stack__.pop()
 
     @LazyAttribute
@@ -166,6 +169,12 @@ class Context:
             strict_parsing=False
         ).items()}
 
+    def prevent_form(self, message):
+        if self.request_content_length:
+            raise exceptions.HTTPStatus(message)
+
+        self.environ['wsgi.input'] = io.BytesIO()
+
     @LazyAttribute
     def form(self):
         """Request form values
@@ -188,63 +197,20 @@ class Context:
             result.load(self.environ['HTTP_COOKIE'])
         return result
 
-    def encode_response(self, buffer):
+    def encode_response(self, buff):
         """Encode response buffer with encoding definition on current
         context
         """
         try:
             if self.response_encoding:
-                return buffer.encode(self.response_encoding)
+                return buff.encode(self.response_encoding)
             else:
-                return buffer
-        except AttributeError:  # pragma: no cover
+                return buff
+        except AttributeError:
             raise TypeError(
                 'The returned response should has the `encode` attribute, '
                 'such as `str`.'
             )
-
-    def expired(self, etag, force=False):
-        none_match = self.environ.get('HTTP_IF_NONE_MATCH')
-        match = self.environ.get('HTTP_IF_MATCH')
-        expired = etag not in (none_match, match)
-
-        if force and not expired:
-            raise exceptions.HTTPNotModified()
-
-        return expired
-
-    def etag(self, tag):
-        self.response_headers['Cache-Control'] = 'must-revalidate'
-        self.response_headers['ETag'] = tag
-
-    def must_revalidate(self, etag, match, throw=True, add_headers=True):
-        ok = match(etag)
-
-        if not ok and throw:
-            raise (
-                throw if not isinstance(throw, bool)
-                else exceptions.HTTPPreconditionFailed
-            )()
-
-        if add_headers:
-            self.etag(etag)
-
-        return ok
-
-    def etag_match(self, etag, **kwargs):
-        return self.must_revalidate(
-            etag,
-            lambda t: self.environ.get('HTTP_IF_MATCH') == t,
-            **kwargs
-        )
-
-    def etag_none_match(self, etag, throw=True, **kwargs):
-        return self.must_revalidate(
-            etag,
-            lambda t: self.environ.get('HTTP_IF_NONE_MATCH') != t,
-            throw=exceptions.HTTPNotModified if throw is True else throw,
-            **kwargs
-        )
 
 
 class ContextProxy(Context):

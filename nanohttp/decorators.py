@@ -1,23 +1,38 @@
-import ujson
 import functools
-from typing import Union
 from inspect import signature, Parameter
+from typing import Union
+
+import ujson
 
 from .contexts import context
+from .constants import UNLIMITED
 
 
-def action(*args, verbs: Union[str, list, tuple]='any', encoding: str='utf-8',
-           content_type: Union[str, None]=None,
-           inner_decorator: Union[callable, None]=None, **kwargs):
+def action(*args, verbs='any', encoding='utf-8', content_type=None,
+           inner_decorator=None, prevent_empty_form=None, prevent_form=None,
+           form_whitelist=None, **kwargs):
     """
     Base action decorator
 
-    :param verbs: Allowed HTTP methods
+    Marks the function as a nanohttp handler/action.
+
+    :param verbs: Allowed HTTP methods as list or tuple of strings.
     :param encoding: Content encoding
-    :param content_type: Content Type
-    :param inner_decorator: Inner decorator
+    :param content_type: Response Content Type
+    :param inner_decorator: Inner decorator, to put it between this decorator
+                            and the handler.
+    :param prevent_empty_form: Boolean or str, indicates to prevent empty HTTP
+                               form. if str given, a
+                               :class:`.HTTPStatus(<str>)` will be raised.
+                               otherwise :class:`.HTTPBadRequest`.
+    :param prevent_form: Boolean or str, indicates to prevent any HTTP form. if
+                         str given, a :class:`.HTTPStatus(<str>)` will be
+                         raised, otherwise :class:`.HTTPBadRequest`.
+    :param form_whitelist: A list of allowed form fields. or a
+                           tuple(list, httpstatus)
     """
     def decorator(func):
+        nonlocal verbs
 
         if inner_decorator is not None:
             func = inner_decorator(func, *args, **kwargs)
@@ -27,6 +42,8 @@ def action(*args, verbs: Union[str, list, tuple]='any', encoding: str='utf-8',
         positional_arguments, optional_arguments, keywordonly_arguments = \
             [], [], []
         action_signature = signature(func)
+        positional_unlimited = False
+
         for name, parameter in action_signature.parameters.items():
             if name == 'self':
                 continue
@@ -35,18 +52,30 @@ def action(*args, verbs: Union[str, list, tuple]='any', encoding: str='utf-8',
                 keywordonly_arguments.append(
                     (parameter.name, parameter.default)
                 )
+            elif parameter.kind == Parameter.VAR_POSITIONAL:
+                positional_unlimited = True
+
+            elif parameter.kind == Parameter.VAR_KEYWORD:
+                # Do nothing for variable keyword arguments
+                pass
+
             elif parameter.default is Parameter.empty:
                 positional_arguments.append(parameter.name)
             else:
                 optional_arguments.append((parameter.name, parameter.default))
 
         func.__nanohttp__ = dict(
-            verbs=verbs,
+            verbs=[verbs] if isinstance(verbs, str) else verbs,
             encoding=encoding,
             content_type=content_type,
-            positional_arguments=positional_arguments,
-            optional_arguments=optional_arguments,
+            minimum_allowed_arguments=len(positional_arguments),
+            maximum_allowed_arguments= \
+                UNLIMITED if positional_unlimited else \
+                len(positional_arguments) + len(optional_arguments),
             keywordonly_arguments=keywordonly_arguments,
+            prevent_empty_form=prevent_empty_form,
+            prevent_form=prevent_form,
+            form_whitelist=form_whitelist,
             default_action='index'
         )
 
@@ -56,6 +85,43 @@ def action(*args, verbs: Union[str, list, tuple]='any', encoding: str='utf-8',
         f = args[0]
         args = tuple()
         return decorator(f)
+
+    return decorator
+
+
+def chunked(trailer_field=None, trailer_value=None):
+    """Enables chunked encoding on an action
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            nonlocal trailer_field, trailer_value
+            context.response_headers.add_header('Transfer-Encoding', 'chunked')
+            if trailer_field:
+                context.response_headers.add_header('Trailer', trailer_field)
+            result = func(*args, **kwargs)
+            try:
+                while True:
+                    chunk = next(result)
+                    yield f'{len(chunk)}\r\n{chunk}\r\n'
+
+            except StopIteration:
+                yield '0\r\n'
+                if trailer_field and trailer_value:
+                    yield f'{trailer_field}: {trailer_value}\r\n'
+                yield '\r\n'
+
+            except Exception as ex:
+                exstr = str(ex)
+                yield f'{len(exstr)}\r\n{exstr}'
+                yield '0\r\n\r\n'
+
+        return wrapper
+
+    if callable(trailer_field):
+        func = trailer_field
+        trailer_field = None
+        return decorator(func)
 
     return decorator
 
@@ -100,41 +166,3 @@ binary = functools.partial(
     encoding=None
 )
 
-
-def ifmatch(tag: Union[str, int, callable]):
-    """ Validate ``If-Match`` header with given tag argument """
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            context.etag_match(tag() if callable(tag) else tag)
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
-
-
-def etag(*args, tag: Union[str, int, callable, None]=None):
-    """Validate ``If-None-Match`` and response with ``ETag`` header
-
-    tag is getting from ``tag`` argument or response object ``__etag__``
-     attribute
-    """
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*a, **kw):
-            _etag = tag() if callable(tag) else tag
-            if _etag is not None:
-                context.etag_none_match(_etag)
-                return func(*a, **kw)
-            else:
-                result = func(*a, **kw)
-                if hasattr(result, '__etag__'):
-                    _etag = result.__etag__
-                if _etag:
-                    context.etag_none_match(_etag)
-                return result
-        return wrapper
-
-    if args and callable(args[0]):
-        return decorator(args[0])
-
-    return decorator

@@ -1,8 +1,8 @@
 
-import pymlconf
+from pymlconf import DeferredRoot
 
 
-settings = pymlconf.DeferredConfigManager()
+settings = DeferredRoot()
 
 
 BUILTIN_CONFIGURATION = """
@@ -18,11 +18,16 @@ def configure(*args, **kwargs):
     """Load configurations
 
     .. seealso:: `pymlconf Documentations
-    <https://github.com/pylover/pymlconf#documentation>`_
+                 <https://github.com/pylover/pymlconf#documentation>`_
 
     :param args: positional arguments pass into
-     ``pymlconf.DeferredConfigManager.load``
+                 ``pymlconf.DeferredRoot.load``
     :param kwargs: keyword arguments pass into
-    ``pymlconf.DeferredConfigManager.load``
+                   ``pymlconf.DeferredRoot.load``
     """
-    settings.load(*args, builtin=BUILTIN_CONFIGURATION, **kwargs)
+
+    settings.initialize(BUILTIN_CONFIGURATION, **kwargs)
+    for a in args:
+        settings.merge(a)
+
+

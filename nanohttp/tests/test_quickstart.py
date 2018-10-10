@@ -1,61 +1,41 @@
-import time
-import unittest
 
-from nanohttp import Controller, quickstart, settings
-from nanohttp.tests.helpers import WsgiAppTestCase, find_free_tcp_port
+import requests
+
+from nanohttp import Application, Controller, action
 
 
-class QuickstartTestCase(WsgiAppTestCase):
+def test_quickstart_without_arguments(run_quickstart):
+    url = run_quickstart()
+    response = requests.get(url)
+    assert response.status_code == 200
 
+
+def test_quickstart_with_initial_config(run_quickstart):
+    url = run_quickstart(config='debug: false')
+    response = requests.get(url)
+    assert response.status_code == 200
+
+
+def test_quickstart_with_application(run_quickstart):
     class Root(Controller):
-        pass
+        @action
+        def index(self):
+            yield f'Index'
 
-    def setUp(self):
-        super().setUp()
-        self.port = find_free_tcp_port()
-
-    def test_without_controller(self):
-        shutdown = quickstart(port=self.port, block=False)
-        self.assertTrue(callable(shutdown))
-        time.sleep(.5)
-        shutdown()
-
-    def test_with_controller(self):
-        shutdown = quickstart(
-            controller=self.Root(),
-            block=False,
-            port=self.port
-        )
-        self.assertTrue(callable(shutdown))
-        time.sleep(.5)
-        shutdown()
-
-    def test_with_application(self):
-        shutdown = quickstart(
-            application=self.application,
-            block=False,
-            port=self.port
-        )
-        self.assertTrue(callable(shutdown))
-        time.sleep(.5)
-        shutdown()
-
-    def test_before_configure(self):
-        settings.__class__._set_instance(None)
-        shutdown = quickstart(
-            port=self.port,
-            block=False,
-            config='''
-            test_config_item: item1
-            '''
-        )
-        self.assertTrue(callable(shutdown))
-        time.sleep(.5)
-        shutdown()
+    url = run_quickstart(application=Application(Root()))
+    response = requests.get(url)
+    assert response.status_code == 200
+    assert response.text == 'Index'
 
 
-if __name__ == '__main__':  # pragma: no cover
-    unittest.main()
+def test_quickstart_with_controller(run_quickstart):
+    class Root(Controller):
+        @action
+        def index(self):
+            yield f'Index'
 
-
+    url = run_quickstart(Root())
+    response = requests.get(url)
+    assert response.status_code == 200
+    assert response.text == 'Index'
 

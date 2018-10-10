@@ -1,11 +1,5 @@
-wsgi_intercept
-nose
-coverage
-coveralls
-httplib2
-sphinx
-sphinx_rtd_theme
-sphinx-autobuild
-sphinx-serve
-sphinxcontrib-googleanalytics
-nose-pudb
+-r requirements-ci.txt
+-r requirements-doc.txt
+pytest-pudb
+ipython
+

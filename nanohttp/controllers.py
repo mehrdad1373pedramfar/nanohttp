@@ -6,14 +6,14 @@ import logging
 from os.path import isdir, join, relpath, pardir, exists
 from mimetypes import guess_type
 
-from .exceptions import HTTPNotFound, HTTPMethodNotAllowed, HTTPForbidden
+from .exceptions import HTTPNotFound, HTTPMethodNotAllowed, HTTPForbidden, \
+    HTTPStatus
 from .contexts import context
-from .constants import HTTP_DATETIME_FORMAT
+from .constants import HTTP_DATETIME_FORMAT, UNLIMITED
 
 
 logging.basicConfig(level=logging.INFO)
 
-UNLIMITED = -1
 
 
 class Controller(object):
@@ -21,9 +21,11 @@ class Controller(object):
     """
 
     __nanohttp__ = dict(
-        verbs='any',
+        verbs=['any'],
         encoding='utf8',
-        default_action='index'
+        default_action='index',
+        minimum_allowed_arguments=0,
+        maximum_allowed_arguments=UNLIMITED
     )
 
     def _get_default_handler(self, remaining_paths):
@@ -41,37 +43,53 @@ class Controller(object):
 
         return getattr(self, remaining_paths[0], None), remaining_paths[1:]
 
-    # noinspection PyMethodMayBeStatic
     def _validate_handler(self, handler, remaining_paths):
         if not callable(handler) or not hasattr(handler, '__nanohttp__'):
             raise HTTPNotFound()
 
-        # noinspection PyUnresolvedReferences
         manifest = handler.__nanohttp__
-
-        positionals = manifest.get('positional_arguments', None)
-        positionals_length = len(positionals) if positionals is not None \
-            else UNLIMITED
-
-        optionals = manifest.get('optional_arguments', None)
-        optionals_length = len(optionals) if optionals is not None \
-            else UNLIMITED
-
-        available_arguments = len(remaining_paths)
+        min_arguments = manifest.get('minimum_allowed_arguments')
+        max_arguments = manifest.get('maximum_allowed_arguments')
+        args_len = len(remaining_paths)
         verbs = manifest.get('verbs', 'any')
 
-        if UNLIMITED not in (optionals_length, positionals_length) and (
-                positionals_length > available_arguments or
-                available_arguments > (positionals_length + optionals_length)
-            ):
+        if min_arguments > args_len or \
+                (max_arguments != UNLIMITED and max_arguments < args_len):
             raise HTTPNotFound()
 
-        if verbs is not 'any' and context.method not in verbs:
+        if verbs != ['any'] and context.method not in verbs:
             raise HTTPMethodNotAllowed()
+
+        prevent_empty_form = manifest.get('prevent_empty_form')
+        if prevent_empty_form and len(context.form) <= 0:
+            raise HTTPStatus(
+                prevent_empty_form \
+                if isinstance(prevent_empty_form, str) \
+                else '400 Empty Form'
+            )
+
+        prevent_form = manifest.get('prevent_form')
+        if prevent_form:
+            context.prevent_form(
+                prevent_form if isinstance(prevent_form, str) \
+                else '400 Form Not Allowed'
+            )
+
+        form_whitelist = manifest.get('form_whitelist')
+        if form_whitelist:
+            if isinstance(form_whitelist, tuple):
+                form_whitelist, status = form_whitelist
+            else:
+                status = None
+
+            for k in context.form:
+                if k not in form_whitelist:
+                    raise HTTPStatus(
+                        status or f'400 Field: {k} Not Allowed'
+                    )
 
         return handler, remaining_paths
 
-    # noinspection PyMethodMayBeStatic
     def _serve_handler(self, handler, remaining_paths):
         context.response_encoding = handler.__nanohttp__.get('encoding', None)
         context.response_content_type = \
@@ -110,9 +128,11 @@ class Static(Controller):
     """Serves static files
     """
     __nanohttp__ = dict(
-        verbs='any',
+        verbs=['any'],
         encoding=None,
-        default_action='index'
+        default_action='index',
+        minimum_allowed_arguments=0,
+        maximum_allowed_arguments=UNLIMITED
     )
 
     __chunk_size__ = 0x4000
@@ -136,12 +156,12 @@ class Static(Controller):
             raise HTTPForbidden()
 
         if isdir(physical_path):
-            if self.default_document:
-                physical_path = join(physical_path, self.default_document)
-                if not exists(physical_path):
-                    raise HTTPForbidden
-            else:
-                raise HTTPForbidden()
+            if not self.default_document:
+                raise HTTPNotFound()
+
+            physical_path = join(physical_path, self.default_document)
+            if not (self.default_document and exists(physical_path)):
+                raise HTTPNotFound()
 
         context.response_headers.add_header(
             'Content-Type',
@@ -173,20 +193,17 @@ class RegexRouteController(Controller):
 
     .. code-block:: python
 
-        class Root(RegexRouteController):
+       class Root(RegexRouteController):
 
-            def __init__(self):
-                super().__init__((
-                    ('/installations/(?P<installation_id>\d+)/access_tokens',
-                    self.access_tokens),
-                ))
+           def __init__(self):
+               super().__init__((
+                   (r'/installations/(?P<installation_id>\\d+)/access_tokens',
+                   self.access_tokens),
+               ))
 
-            @json
-            def access_tokens(self, installation_id: int):
-                return dict(
-                    installationId=installation_id
-                )
-
+           @json
+           def access_tokens(self, installation_id: int):
+               return dict(installationId=installation_id)
 
     """
 
